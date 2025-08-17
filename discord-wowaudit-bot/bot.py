@@ -33,7 +33,7 @@ IGNORED_RESPONSES = [
     "Button4", "Minor Upgrade", "Autopass", "Pass", "Mog", "Disenchant"
 ]
 
-RESPONSE_ORDER = ["BiS", "Major +2%", "Upgrade 1-2%", "Sidegrade 0-1%"]
+RESPONSE_ORDER = [ "Major +2%", "Upgrade 1-2%", "Sidegrade 0-1%"]
 
 @client.event
 async def on_ready():

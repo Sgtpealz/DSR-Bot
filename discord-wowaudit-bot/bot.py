@@ -11,7 +11,6 @@ from wow_data import (
     CLASS_HEX_COLORS, CLASS_ICONS
 )
 
-
 # Load environment variables
 load_dotenv()
 
@@ -33,8 +32,10 @@ IGNORED_RESPONSES = [
     "Button4", "Minor Upgrade", "Autopass", "Pass", "Mog", "Disenchant"
 ]
 
-RESPONSE_ORDER = [ "Major +2%", "Upgrade 1-2%", "Sidegrade 0-1%"]
+# BiS removed
+RESPONSE_ORDER = ["Major +2%", "Upgrade 1-2%", "Sidegrade 0-1%"]
 
+# map common label variants to our buckets
 RESPONSE_VARIANTS = {
     "major +2%": "Major +2%",
     "major upgrade +2%": "Major +2%",
@@ -42,7 +43,7 @@ RESPONSE_VARIANTS = {
     "grosses upgrade +2%": "Major +2%",
 
     "upgrade 1-2%": "Upgrade 1-2%",
-    "upgrade 1–2%": "Upgrade 1-2%",  # en dash
+    "upgrade 1–2%": "Upgrade 1-2%",
     "verbesserung 1-2%": "Upgrade 1-2%",
     "verbesserung 1–2%": "Upgrade 1-2%",
 
@@ -59,6 +60,7 @@ def normalize_response(name: str) -> str | None:
     return RESPONSE_VARIANTS.get(key)
 
 def group_for_character(char_name: str) -> str:
+    """Derive Tanks und Heiler / Melees / Ranges from CHARACTER_CLASSES."""
     cls_spec = CHARACTER_CLASSES.get(char_name)
     if not cls_spec:
         return "Ungrouped"
@@ -75,10 +77,7 @@ def group_for_character(char_name: str) -> str:
 async def on_ready():
     guild = discord.Object(id=GUILD_ID)
     tree.copy_global_to(guild=guild)
-    
-    # This will REMOVE all commands in the guild and sync new ones
-    await tree.sync(guild=guild)  
-
+    await tree.sync(guild=guild)
     print(f'✅ Slash commands synced to guild {GUILD_ID}')
     print(f'✅ Logged in as {client.user}')
 
@@ -92,6 +91,71 @@ def get_loot_history():
     if response.status_code == 200:
         return response.json().get("history_items", [])
     return []
+
+# ---------- Loot summary builder & Refresh button ----------
+
+def build_group_summary_text(items, difficulty: str, target_group: str) -> str | None:
+    """
+    Build one group's summary text using current items, difficulty and auto-grouping.
+    Returns None if this group has no matching rows.
+    """
+    # group -> char -> bucket -> count
+    grouped_data = defaultdict(lambda: defaultdict(int))
+
+    for item in items:
+        raw_resp = (item.get("response_type") or {}).get("name", "")
+        resp = normalize_response(raw_resp)
+        if not resp or resp not in RESPONSE_ORDER:
+            continue
+
+        if (item.get("difficulty", "") or "").lower() != difficulty.lower():
+            continue
+
+        char_id = item.get("character_id")
+        char_name = CHARACTER_MAP.get(char_id, f"ID {char_id}")
+
+        group = group_for_character(char_name)
+        if group != target_group:
+            continue
+
+        grouped_data[char_name][resp] += 1
+
+    if not grouped_data:
+        return None
+
+    # dynamic width for Name column (no huge gap)
+    max_name_len = max(len(n) for n in grouped_data.keys())
+    header = "Name".ljust(max_name_len) + "".join(f" | {resp:<16}" for resp in RESPONSE_ORDER)
+    sep_len = max_name_len + len(RESPONSE_ORDER) * (3 + 16)
+
+    message = f"📊 Loot Summary — {difficulty.title()} ({target_group})\n"
+    message += "```\n" + header + "\n" + "-" * sep_len + "\n"
+
+    for char in sorted(grouped_data.keys()):
+        row = char.ljust(max_name_len)
+        for resp in RESPONSE_ORDER:
+            count = grouped_data[char].get(resp, 0)
+            row += f" | {(str(count) if count else ''):<16}"
+        message += row + "\n"
+    message += "```"
+    return message
+
+class LootSummaryView(discord.ui.View):
+    def __init__(self, difficulty: str, group: str, *, timeout: float | None = 300):
+        super().__init__(timeout=timeout)
+        self.difficulty = difficulty
+        self.group = group
+
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary, emoji="🔄")
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        items = get_loot_history()
+        new_text = build_group_summary_text(items, self.difficulty, self.group)
+        if not new_text:
+            new_text = f"📭 No matching loot entries for **{self.group}**."
+        # Re-attach a new view so the button keeps working after edits
+        await interaction.response.edit_message(content=new_text, view=LootSummaryView(self.difficulty, self.group))
+
+# ----------------------------------------------------------
 
 @tree.command(name="wishlist", description="Submit a Raidbots Droptimizer link for your character.")
 @app_commands.describe(character="Your character name", link="Your Droptimizer link")
@@ -150,7 +214,7 @@ async def loothistory(interaction: discord.Interaction, character: str = None, d
         if character:
             filtered = [i for i in filtered if CHARACTER_MAP.get(i.get("character_id")) == character]
         if difficulty:
-            filtered = [i for i in filtered if i.get("difficulty", "").lower() == difficulty.lower()]
+            filtered = [i for i in filtered if (i.get("difficulty", "") or "").lower() == difficulty.lower()]
 
         if not filtered:
             await interaction.edit_original_response(content="📭 No matching loot entries found.")
@@ -158,11 +222,11 @@ async def loothistory(interaction: discord.Interaction, character: str = None, d
 
         summary = f"📦 **Loot History**\n"
         for item in filtered[:20]:
-            date = item.get("awarded_at", "")[:10]
+            date = (item.get("awarded_at", "") or "")[:10]
             char_id = item.get("character_id")
             char_name = CHARACTER_MAP.get(char_id, f"ID {char_id}")
             name = item.get("name", "Unnamed Item")
-            slot = item.get("slot", "").replace("_", " ")
+            slot = (item.get("slot", "") or "").replace("_", " ")
             difficulty_str = item.get("difficulty", "Unknown")
             summary += f"- **{name}** ({slot}) | `{date}` | 🎯 {char_name} | 🛡 {difficulty_str} \n"
 
@@ -183,56 +247,29 @@ async def lootsummary(interaction: discord.Interaction, difficulty: str):
             await interaction.edit_original_response(content="📭 No loot entries found.")
             return
 
-        # group -> char -> bucket -> count
-        grouped_data = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-
-        for item in items:
-            raw_resp = (item.get("response_type") or {}).get("name", "")
-            resp = normalize_response(raw_resp)
-            if not resp or resp not in RESPONSE_ORDER:
-                continue  # skip ignored/unmapped responses
-
-            if (item.get("difficulty", "") or "").lower() != difficulty.lower():
-                continue
-
-            char_id = item.get("character_id")
-            char_name = CHARACTER_MAP.get(char_id, f"ID {char_id}")
-
-            # derive group from CHARACTER_CLASSES; no need to be listed in CHARACTER_ROLES
-            group = group_for_character(char_name)
-            grouped_data[group][char_name][resp] += 1
-
-        # if nothing matched, tell user
-        if not grouped_data:
-            await interaction.edit_original_response(content="📭 No matching loot entries found.")
-            return
-
-        # output groups in consistent order + include Ungrouped last if present
+        sent_any = False
         ordered_groups = ["Tanks und Heiler", "Melees", "Ranges"]
-        if "Ungrouped" in grouped_data:
+
+        # include Ungrouped at the end if any rows fall there
+        # quick probe:
+        has_ungrouped = any(group_for_character(CHARACTER_MAP.get(i.get("character_id"), ""))
+                            == "Ungrouped"
+                            for i in items)
+        if has_ungrouped:
             ordered_groups.append("Ungrouped")
 
         for group in ordered_groups:
-            if group not in grouped_data:
+            text = build_group_summary_text(items, difficulty, group)
+            if not text:
                 continue
+            view = LootSummaryView(difficulty, group)
+            await interaction.followup.send(content=text, view=view)
+            sent_any = True
 
-            # dynamic width for the name column
-            max_name_len = max(len(n) for n in grouped_data[group].keys())
-            header = "Name".ljust(max_name_len) + "".join(f" | {resp:<16}" for resp in RESPONSE_ORDER)
-            sep_len = max_name_len + len(RESPONSE_ORDER) * (3 + 16)
-            message = f"📊 Loot Summary — {difficulty.title()} ({group})\n"
-            message += "```\n" + header + "\n" + "-" * sep_len + "\n"
-
-            for char in sorted(grouped_data[group]):
-                row = char.ljust(max_name_len)
-                for resp in RESPONSE_ORDER:
-                    count = grouped_data[group][char].get(resp, 0)
-                    cell = f"{count}" if count > 0 else ""
-                    row += f" | {cell:<16}"
-                message += row + "\n"
-            message += "```"
-
-            await interaction.followup.send(content=message[:2000])
+        if not sent_any:
+            await interaction.edit_original_response(content="📭 No matching loot entries found.")
+        else:
+            await interaction.edit_original_response(content="✅ Posted loot summaries with a Refresh button.")
 
     except Exception as e:
         print(f"❌ Error during /lootsummary: {e}")
@@ -301,7 +338,7 @@ async def help_command(interaction: discord.Interaction):
         "**📖 Available Commands:**\n"
         "/wishlist - Submit a Raidbots Droptimizer link.\n"
         "/loothistory - Show loot history (optional filters).\n"
-        "/lootsummary - Show loot summary by role and difficulty.\n"
+        "/lootsummary - Show loot summary by role and difficulty (with Refresh button).\n"
         "/characterids - Show tracked character IDs.\n"
         "/roster - Show the current team roster grouped by role.\n"
         "/missingwishlist - Show who is missing a wishlist.\n"

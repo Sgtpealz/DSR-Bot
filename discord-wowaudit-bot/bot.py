@@ -165,26 +165,22 @@ async def lootsummary(interaction: discord.Interaction, difficulty: str):
                 if char_name in names:
                     grouped_data[group][char_name][response] += 1
 
-            for group in ["Tanks und Heiler", "Melees", "Ranges"]:
-                if group not in grouped_data:
-                    continue
+        for group in ["Tanks und Heiler", "Melees", "Ranges"]:
+            if group not in grouped_data:
+                continue
 
-                # Find longest name in this group for alignment
-                max_name_len = max(len(name) for name in grouped_data[group].keys())
+            message = f"📊 Loot Summary — {difficulty.title()} ({group})\n"
+            message += "```\nName            " + ''.join(f"| {resp:<20}" for resp in RESPONSE_ORDER) + "\n"
+            message += "-" * (len(message.splitlines()[-1])) + "\n"
 
-                message = f"📊 Loot Summary — {difficulty.title()} ({group})\n"
-                message += "```\nName".ljust(max_name_len + 1) + ''.join(f"| {resp:<20}" for resp in RESPONSE_ORDER) + "\n"
-                message += "-" * (max_name_len + 1 + len(RESPONSE_ORDER) * 23) + "\n"
-
-                for char in sorted(grouped_data[group]):
-                    row = f"{char.ljust(max_name_len)}"
-                    for resp in RESPONSE_ORDER:
-                        count = grouped_data[group][char].get(resp, 0)
-                        cell = f"{count}" if count > 0 else ""
-                        row += f"| {cell:<20}"
-                    message += row + "\n"
-                message += "```"
-
+            for char in sorted(grouped_data[group]):
+                row = f"{char:<15}"
+                for resp in RESPONSE_ORDER:
+                    count = grouped_data[group][char].get(resp, 0)
+                    cell = f"{count}" if count > 0 else ""
+                    row += f"| {cell:<20}"
+                message += row + "\n"
+            message += "```"
 
             await interaction.followup.send(content=message[:2000])
 

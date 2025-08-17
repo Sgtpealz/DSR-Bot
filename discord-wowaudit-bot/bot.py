@@ -35,6 +35,42 @@ IGNORED_RESPONSES = [
 
 RESPONSE_ORDER = [ "Major +2%", "Upgrade 1-2%", "Sidegrade 0-1%"]
 
+RESPONSE_VARIANTS = {
+    "major +2%": "Major +2%",
+    "major upgrade +2%": "Major +2%",
+    "großes upgrade +2%": "Major +2%",
+    "grosses upgrade +2%": "Major +2%",
+
+    "upgrade 1-2%": "Upgrade 1-2%",
+    "upgrade 1–2%": "Upgrade 1-2%",  # en dash
+    "verbesserung 1-2%": "Upgrade 1-2%",
+    "verbesserung 1–2%": "Upgrade 1-2%",
+
+    "sidegrade 0-1%": "Sidegrade 0-1%",
+    "sidegrade 0–1%": "Sidegrade 0-1%",
+    "seitengrade 0-1%": "Sidegrade 0-1%",
+    "seitengrade 0–1%": "Sidegrade 0-1%",
+}
+
+def normalize_response(name: str) -> str | None:
+    if not name:
+        return None
+    key = name.strip().lower()
+    return RESPONSE_VARIANTS.get(key)
+
+def group_for_character(char_name: str) -> str:
+    cls_spec = CHARACTER_CLASSES.get(char_name)
+    if not cls_spec:
+        return "Ungrouped"
+    _, spec = cls_spec
+    if spec in ("Tank", "Heal"):
+        return "Tanks und Heiler"
+    if spec == "Melee":
+        return "Melees"
+    if spec == "Ranged":
+        return "Ranges"
+    return "Ungrouped"
+
 @client.event
 async def on_ready():
     guild = discord.Object(id=GUILD_ID)
@@ -147,38 +183,52 @@ async def lootsummary(interaction: discord.Interaction, difficulty: str):
             await interaction.edit_original_response(content="📭 No loot entries found.")
             return
 
+        # group -> char -> bucket -> count
         grouped_data = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
 
         for item in items:
-            response = item.get("response_type", {}).get("name", "Unknown")
-            if response in IGNORED_RESPONSES or response not in RESPONSE_ORDER:
-                continue
+            raw_resp = (item.get("response_type") or {}).get("name", "")
+            resp = normalize_response(raw_resp)
+            if not resp or resp not in RESPONSE_ORDER:
+                continue  # skip ignored/unmapped responses
 
-            difficulty_val = item.get("difficulty", "").lower()
-            if difficulty_val != difficulty.lower():
+            if (item.get("difficulty", "") or "").lower() != difficulty.lower():
                 continue
 
             char_id = item.get("character_id")
             char_name = CHARACTER_MAP.get(char_id, f"ID {char_id}")
 
-            for group, names in CHARACTER_ROLES.items():
-                if char_name in names:
-                    grouped_data[group][char_name][response] += 1
+            # derive group from CHARACTER_CLASSES; no need to be listed in CHARACTER_ROLES
+            group = group_for_character(char_name)
+            grouped_data[group][char_name][resp] += 1
 
-        for group in ["Tanks und Heiler", "Melees", "Ranges"]:
+        # if nothing matched, tell user
+        if not grouped_data:
+            await interaction.edit_original_response(content="📭 No matching loot entries found.")
+            return
+
+        # output groups in consistent order + include Ungrouped last if present
+        ordered_groups = ["Tanks und Heiler", "Melees", "Ranges"]
+        if "Ungrouped" in grouped_data:
+            ordered_groups.append("Ungrouped")
+
+        for group in ordered_groups:
             if group not in grouped_data:
                 continue
 
+            # dynamic width for the name column
+            max_name_len = max(len(n) for n in grouped_data[group].keys())
+            header = "Name".ljust(max_name_len) + "".join(f" | {resp:<16}" for resp in RESPONSE_ORDER)
+            sep_len = max_name_len + len(RESPONSE_ORDER) * (3 + 16)
             message = f"📊 Loot Summary — {difficulty.title()} ({group})\n"
-            message += "```\nName            " + ''.join(f"| {resp:<20}" for resp in RESPONSE_ORDER) + "\n"
-            message += "-" * (len(message.splitlines()[-1])) + "\n"
+            message += "```\n" + header + "\n" + "-" * sep_len + "\n"
 
             for char in sorted(grouped_data[group]):
-                row = f"{char:<15}"
+                row = char.ljust(max_name_len)
                 for resp in RESPONSE_ORDER:
                     count = grouped_data[group][char].get(resp, 0)
                     cell = f"{count}" if count > 0 else ""
-                    row += f"| {cell:<20}"
+                    row += f" | {cell:<16}"
                 message += row + "\n"
             message += "```"
 
